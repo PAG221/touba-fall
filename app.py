@@ -22,7 +22,7 @@ def home():
 
         conn.close()
 
-        return render_template("index.html", cotisations=data)
+        return render_template("login.html", cotisations=data)
 
     except Exception as e:
         return f"Erreur serveur : {e}"
