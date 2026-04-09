@@ -1,8 +1,3 @@
-"""
-app.py - Application web Flask pour Touba Fall
-Gestion des cotisations hebdomadaires - Version Web
-"""
-
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file
 from datetime import date, datetime
 import io
@@ -10,182 +5,126 @@ import db
 import os
 
 app = Flask(__name__)
-app.secret_key = 'touba_fall_secret_key_2025'
-# ─── Configuration ──────────────────────────────────────────────────────────────
+app.secret_key = os.getenv("SECRET_KEY", "touba_fall_secret_key_2025")
 
-ADMIN_USERNAME = 'admin'
-ADMIN_PASSWORD = '1234'
 
-# ─── Routes ────────────────────────────────────────────────────────────────────
-
-@app.route('/')
-def index():
-    """Page d'accueil - redirection vers login ou dashboard"""
-    if 'logged_in' in session:
-        return redirect(url_for('dashboard'))
-    return redirect(url_for('login'))
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    """Page de connexion administrateur"""
-    if request.method == 'POST':
-        username = request.form.get('username', '').strip()
-        password = request.form.get('password', '').strip()
-
-        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
-            session['logged_in'] = True
-            flash('Connexion réussie', 'success')
-            return redirect(url_for('dashboard'))
-        else:
-            flash('Identifiants incorrects', 'error')
-
-    return render_template('login.html')
-
-@app.route('/logout')
-def logout():
-    """Déconnexion"""
-    session.pop('logged_in', None)
-    flash('Déconnexion réussie', 'success')
-    return redirect(url_for('login'))
-
-@app.route('/dashboard')
-def dashboard():
-    """Tableau de bord principal"""
-    if 'logged_in' not in session:
-        return redirect(url_for('login'))
-
+# -------------------------
+# HOME - LISTE COTISATIONS
+# -------------------------
+@app.route("/")
+def home():
     try:
-        # Récupérer les données pour le dashboard
-        cotisations = db.get_toutes_cotisations()
-        stats = db.get_statistiques()
+        conn = db.get_db()
+        cursor = conn.cursor()
 
-        # Calculer le total du mois en cours
-        auj = date.today()
-        total_mois = db.get_total_mois(auj.year, auj.month)
+        cursor.execute("SELECT * FROM cotisations ORDER BY id DESC")
+        data = cursor.fetchall()
 
-        # Calculer le nombre de semaines (jeudis distincts)
-        nb_semaines = stats.get('nb_jeudis', 0)
+        conn.close()
 
-        return render_template('dashboard.html',
-                             cotisations=cotisations,
-                             stats=stats,
-                             total_mois=total_mois,
-                             nb_semaines=nb_semaines,
-                             aujourd_hui=str(db.get_jeudi_actuel()))
+        return render_template("index.html", cotisations=data)
 
     except Exception as e:
-        flash(f'Erreur lors du chargement des données: {str(e)}', 'error')
-        return render_template('dashboard.html', cotisations=[], stats={}, total_mois=0, nb_semaines=0)
+        return f"Erreur serveur : {e}"
 
-@app.route('/add', methods=['POST'])
-def add_contribution():
-    """Ajouter une nouvelle cotisation"""
-    if 'logged_in' not in session:
-        return redirect(url_for('login'))
 
+# -------------------------
+# AJOUT COTISATION
+# -------------------------
+@app.route("/add", methods=["POST"])
+def add():
     try:
-        date_str = request.form.get('date', '').strip()
-        montant_str = request.form.get('montant', '').strip()
+        date_cotisation = request.form["date"]
+        montant = request.form["montant"]
 
-        # Validations
-        if not date_str:
-            flash('Veuillez saisir une date', 'error')
-            return redirect(url_for('dashboard'))
+        conn = db.get_db()
+        cursor = conn.cursor()
 
-        if not montant_str:
-            flash('Veuillez saisir un montant', 'error')
-            return redirect(url_for('dashboard'))
-
-        # Conversion et validation
-        try:
-            date_cot = date.fromisoformat(date_str)
-        except ValueError:
-            flash('Format de date invalide (AAAA-MM-JJ)', 'error')
-            return redirect(url_for('dashboard'))
-
-        try:
-            montant = float(montant_str.replace(',', '.'))
-            if montant <= 0:
-                raise ValueError
-        except ValueError:
-            flash('Montant invalide (nombre positif requis)', 'error')
-            return redirect(url_for('dashboard'))
-
-        # Ajouter à la base de données
-        new_id = db.ajouter_cotisation(date_cot, montant)
-        flash(f'Cotisation #{new_id} enregistrée avec succès', 'success')
-
-    except Exception as e:
-        flash(f'Erreur lors de l\'ajout: {str(e)}', 'error')
-
-    return redirect(url_for('dashboard'))
-
-@app.route('/delete/<int:cotisation_id>', methods=['POST'])
-def delete_contribution(cotisation_id):
-    """Supprimer une cotisation"""
-    if 'logged_in' not in session:
-        return redirect(url_for('login'))
-
-    try:
-        success = db.supprimer_cotisation(cotisation_id)
-        if success:
-            flash('Cotisation supprimée avec succès', 'success')
-        else:
-            flash('Cotisation introuvable', 'error')
-    except Exception as e:
-        flash(f'Erreur lors de la suppression: {str(e)}', 'error')
-
-    return redirect(url_for('dashboard'))
-
-@app.route('/export_pdf')
-def export_pdf():
-    """Exporter les cotisations en PDF"""
-    if 'logged_in' not in session:
-        return redirect(url_for('login'))
-
-    try:
-        # Créer un buffer en mémoire pour le PDF
-        buffer = io.BytesIO()
-
-        # Générer le PDF dans le buffer
-        n = db.exporter_pdf_to_buffer(buffer)
-
-        buffer.seek(0)
-
-        # Générer le nom du fichier avec la date
-        today = datetime.now().strftime('%Y-%m-%d')
-        filename = f"cotisations_touba_fall_{today}.pdf"
-
-        flash(f'PDF généré avec succès ({n} entrées)', 'success')
-
-        return send_file(
-            buffer,
-            as_attachment=True,
-            download_name=filename,
-            mimetype='application/pdf'
+        cursor.execute(
+            "INSERT INTO cotisations (date, montant) VALUES (%s, %s)",
+            (date_cotisation, montant)
         )
 
+        conn.commit()
+        conn.close()
+
+        flash("Cotisation ajoutée avec succès ✔")
+        return redirect(url_for("home"))
+
     except Exception as e:
-        flash(f'Erreur lors de l\'export PDF: {str(e)}', 'error')
-        return redirect(url_for('dashboard'))
+        return f"Erreur ajout : {e}"
 
-# ─── Fonctions utilitaires ─────────────────────────────────────────────────────
 
-def initialize_app():
-    """Initialisation de l'application"""
-    print("🔌 Connexion à Touba Fall Database…")
+# -------------------------
+# SUPPRESSION COTISATION
+# -------------------------
+@app.route("/delete/<int:id>")
+def delete(id):
     try:
-        db.initialize_database()
-        print("✔  Système Touba Fall prêt.")
+        conn = db.get_db()
+        cursor = conn.cursor()
+
+        cursor.execute("DELETE FROM cotisations WHERE id=%s", (id,))
+
+        conn.commit()
+        conn.close()
+
+        flash("Cotisation supprimée ✔")
+        return redirect(url_for("home"))
+
     except Exception as e:
-        print(f"✘ Erreur de connexion à MariaDB: {e}")
-        print("Vérifiez que MariaDB est démarré et que les paramètres dans db.py sont corrects.")
-        exit(1)
+        return f"Erreur suppression : {e}"
 
-# ─── Lancement ────────────────────────────────────────────────────────────────
 
-if __name__ == '__main__':
-    initialize_app()
-    print("🚀 Démarrage du serveur web Touba Fall…")
-    print("Accédez à l'application sur: http://localhost:5000")
-    app.run(debug=True, host='0.0.0.0', port=5000)
+# -------------------------
+# TEST BASE DE DONNÉES
+# -------------------------
+@app.route("/test-db")
+def test_db():
+    try:
+        conn = db.get_db()
+        conn.close()
+        return "Connexion DB OK ✔"
+    except Exception as e:
+        return f"Erreur DB : {e}"
+
+
+# -------------------------
+# EXPORT PDF (BASIC)
+# -------------------------
+@app.route("/export")
+def export():
+    try:
+        from reportlab.pdfgen import canvas
+
+        conn = db.get_db()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM cotisations")
+        data = cursor.fetchall()
+        conn.close()
+
+        buffer = io.BytesIO()
+        pdf = canvas.Canvas(buffer)
+
+        pdf.drawString(100, 800, "Touba Fall - Cotisations")
+
+        y = 750
+        for row in data:
+            pdf.drawString(100, y, f"ID:{row[0]} | Date:{row[1]} | Montant:{row[2]}")
+            y -= 20
+
+        pdf.save()
+        buffer.seek(0)
+
+        return send_file(buffer, as_attachment=True, download_name="cotisations.pdf")
+
+    except Exception as e:
+        return f"Erreur PDF : {e}"
+
+
+# -------------------------
+# RUN LOCAL / RENDER
+# -------------------------
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)
